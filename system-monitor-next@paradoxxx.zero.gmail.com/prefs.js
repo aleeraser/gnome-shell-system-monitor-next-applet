@@ -131,7 +131,7 @@ const SMGeneralPrefsPage = GObject.registerClass({
 
 // ** Monitor Configuration Constants **
 
-const MONITOR_TYPES = ['cpu', 'memory', 'swap', 'net', 'disk', 'gpu', 'thermal', 'fan', 'battery', 'freq', 'prometheus'];
+const MONITOR_TYPES = ['cpu', 'memory', 'swap', 'net', 'disk', 'gpu', 'thermal', 'fan', 'battery', 'freq', 'power', 'prometheus'];
 
 const COLOR_MAP = {
     cpu: ['user', 'system', 'nice', 'iowait', 'other'],
@@ -144,6 +144,7 @@ const COLOR_MAP = {
     fan: ['fan0'],
     battery: ['batt0'],
     freq: ['freq'],
+    power: ['total'],
     prometheus: ['value'],
 };
 
@@ -158,6 +159,7 @@ const DEFAULT_COLORS = {
     fan: {fan0: '#f2002e'},
     battery: {batt0: '#f2002e'},
     freq: {freq: '#001d26'},
+    power: {total: '#ff8c00'},
     prometheus: {value: '#00b3a4'},
 };
 
@@ -307,6 +309,7 @@ function detectDevices(type, callback) {
         });
         break;
     }
+    case 'power':
     case 'prometheus':
         callback(['default']);
         break;
@@ -323,7 +326,8 @@ function buildDefaultConfig(type, device) {
         display: true,
         style: 'graph',
         'graph-width': 100,
-        'refresh-time': type === 'cpu' || type === 'freq' ? 1500 : 5000,
+        'refresh-time': type === 'cpu' || type === 'freq' ? 1500
+            : type === 'power' ? 2000 : 5000,
         'show-text': true,
         'show-menu': true,
         colors: {...(DEFAULT_COLORS[type] || {})},

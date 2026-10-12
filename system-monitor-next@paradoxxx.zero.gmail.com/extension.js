@@ -42,6 +42,7 @@ import { Gpu } from './widgets/gpu.js';
 import { Icon } from './widgets/icon.js';
 import { Mem } from './widgets/memory.js';
 import { Net } from './widgets/network.js';
+import { Power } from './widgets/power.js';
 import { Swap } from './widgets/swap.js';
 import { Thermal } from './widgets/thermal.js';
 import { Prometheus } from './widgets/prometheus.js';
@@ -59,6 +60,7 @@ const WIDGET_CLASSES = {
     fan: Fan,
     battery: Battery,
     freq: Freq,
+    power: Power,
     prometheus: Prometheus,
 };
 
