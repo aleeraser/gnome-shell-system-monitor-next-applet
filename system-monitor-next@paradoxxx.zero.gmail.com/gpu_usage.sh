@@ -41,6 +41,14 @@ if checkcommand nvidia-smi && [ -d /sys/bus/pci/drivers/nvidia ]; then
 		fi
 	done
 
+	# If no applications are currently using the NVIDIA GPU, avoid nvidia-smi to allow it to enter D3cold
+	if checkcommand fuser && ! fuser /dev/nvidia0 /dev/nvidiactl /dev/dri/renderD129 >/dev/null 2>&1; then
+		echo "0"
+		echo "0"
+		echo "0"
+		exit 0
+	fi
+
 	nvidia-smi -i "$GPU_INDEX" --query-gpu=memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits 2>/dev/null | while IFS=', ' read -r a b c; do echo "$a"; echo "$b"; echo "$c"; done
 
 elif lsmod | grep amdgpu > /dev/null; then

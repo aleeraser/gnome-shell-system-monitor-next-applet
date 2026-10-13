@@ -278,12 +278,7 @@ const Power = class SystemMonitor_Power extends ElementBase {
         return false;
     }
 
-    _sampleDirectGpuPower(callback) {
-        if (this._isNvidiaSuspended()) {
-            callback(0.0);
-            return;
-        }
-
+    _queryNvidiaSmiPower(callback) {
         try {
             let proc = new Gio.Subprocess({
                 argv: ['nvidia-smi', '--query-gpu=power.draw', '--format=csv,noheader,nounits'],
@@ -303,6 +298,38 @@ const Power = class SystemMonitor_Power extends ElementBase {
             });
         } catch {
             callback(null);
+        }
+    }
+
+    _sampleDirectGpuPower(callback) {
+        if (this._isNvidiaSuspended()) {
+            callback(0.0);
+            return;
+        }
+
+        // If no processes are holding NVIDIA device nodes, skip nvidia-smi
+        // so the 10-second kernel runtime autosuspend timer can cleanly expire into D3cold.
+        try {
+            let fuserProc = new Gio.Subprocess({
+                argv: ['fuser', '/dev/nvidia0', '/dev/nvidiactl', '/dev/dri/renderD129'],
+                flags: Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE,
+            });
+            fuserProc.init(null);
+            fuserProc.wait_async(null, (p, result) => {
+                try {
+                    p.wait_finish(result);
+                    if (p.get_exit_status() !== 0) {
+                        callback(0.0);
+                        return;
+                    }
+                } catch {
+                    callback(null);
+                    return;
+                }
+                this._queryNvidiaSmiPower(callback);
+            });
+        } catch {
+            this._queryNvidiaSmiPower(callback);
         }
     }
 
