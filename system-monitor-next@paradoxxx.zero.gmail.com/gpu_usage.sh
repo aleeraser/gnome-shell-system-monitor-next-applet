@@ -27,10 +27,21 @@ checkcommand()
 
 GPU_INDEX=${1:-0}
 
-# This will print three lines. The first one is the the total vRAM available,
-# the second one is the used vRAM and the third on is the GPU usage in %.
-if nvidia-smi --list-gpus > /dev/null 2>&1  ; then
-	nvidia-smi -i "$GPU_INDEX" --query-gpu=memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits | while IFS=', ' read -r a b c; do echo "$a"; echo "$b"; echo "$c"; done
+# Check if NVIDIA GPU is present without running nvidia-smi --list-gpus
+if checkcommand nvidia-smi && [ -d /sys/bus/pci/drivers/nvidia ]; then
+	# If discrete GPU is currently suspended in RTD3, do not wake it up with nvidia-smi
+	for pci_dev in /sys/bus/pci/drivers/nvidia/[0-9]*; do
+		if [ -f "$pci_dev/power/runtime_status" ]; then
+			if [ "$(cat "$pci_dev/power/runtime_status" 2>/dev/null)" = "suspended" ]; then
+				echo "0"
+				echo "0"
+				echo "0"
+				exit 0
+			fi
+		fi
+	done
+
+	nvidia-smi -i "$GPU_INDEX" --query-gpu=memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits 2>/dev/null | while IFS=', ' read -r a b c; do echo "$a"; echo "$b"; echo "$c"; done
 
 elif lsmod | grep amdgpu > /dev/null; then
 	# DRM card numbers don't always start at 0 (the GPU can be card1 with
