@@ -15,6 +15,7 @@ const TCCD_IFACE = 'com.tuxedocomputers.tccd';
 
 const RAPL_ENERGY_RETRY_POLLS = 30;
 const TCCD_RETRY_POLLS = 15;
+const PLATFORM_BASE_AC_WATTS = 13.0; // Estimated baseline draw on AC for screen, RAM, SSDs, chipset, and fans
 
 function readSysfsInt(path) {
     try {
@@ -257,32 +258,89 @@ const Power = class SystemMonitor_Power extends ElementBase {
         });
     }
 
-    _combine(battery, directPower) {
+    _isNvidiaSuspended() {
+        try {
+            let dir = Gio.File.new_for_path('/sys/bus/pci/drivers/nvidia/');
+            let enumerator = dir.enumerate_children('standard::name', Gio.FileQueryInfoFlags.NONE, null);
+            let info;
+            while ((info = enumerator.next_file(null)) !== null) {
+                let name = info.get_name();
+                if (/^[0-9a-fA-F:.]+$/.test(name)) {
+                    let status = readSysfsString(`/sys/bus/pci/drivers/nvidia/${name}/power/runtime_status`);
+                    if (status === 'suspended') {
+                        enumerator.close(null);
+                        return true;
+                    }
+                }
+            }
+            enumerator.close(null);
+        } catch {}
+        return false;
+    }
+
+    _sampleDirectGpuPower(callback) {
+        if (this._isNvidiaSuspended()) {
+            callback(0.0);
+            return;
+        }
+
+        try {
+            let proc = new Gio.Subprocess({
+                argv: ['nvidia-smi', '--query-gpu=power.draw', '--format=csv,noheader,nounits'],
+                flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE,
+            });
+            proc.init(null);
+            proc.communicate_utf8_async(null, null, (p, result) => {
+                try {
+                    let [ok, output] = p.communicate_utf8_finish(result);
+                    if (ok && output) {
+                        let val = parseFloat(output.trim().split('\n')[0]);
+                        callback(isNaN(val) ? null : val);
+                        return;
+                    }
+                } catch {}
+                callback(null);
+            });
+        } catch {
+            callback(null);
+        }
+    }
+
+    _combine(battery, directPower, directGpu) {
         let cpuW = directPower !== null ? directPower : this._tccdCpu;
-        let gpuW = this._tccdGpu;
+        let gpuW = this._tccdGpu !== null ? this._tccdGpu : directGpu;
 
         let total = null;
-        if (battery && battery.status === 'Discharging') {
+        let isDischarging = battery && battery.status === 'Discharging';
+
+        if (isDischarging) {
             // On battery the battery itself is the true total draw.
             total = Math.abs(battery.watts);
         } else {
             let parts = [cpuW, gpuW].filter(v => v !== null && v >= 0);
-            if (parts.length > 0)
-                total = parts.reduce((a, b) => a + b, 0);
+            let metered = parts.reduce((a, b) => a + b, 0);
+            let chargeW = (battery && battery.status === 'Charging') ? Math.abs(battery.watts) : 0;
+            // On AC: sum metered components (CPU + dGPU) + baseline platform draw + battery charging power
+            total = metered + PLATFORM_BASE_AC_WATTS + chargeW;
         }
 
         const Locale = this.extension._Locale;
         const fmt = v => v === null ? '–'
             : v.toLocaleString(Locale, {maximumFractionDigits: 1, minimumFractionDigits: 1});
 
-        let detail = `CPU ${fmt(cpuW)} · GPU ${fmt(gpuW)} · `;
+        let detail = `CPU ${fmt(cpuW)} · GPU ${fmt(gpuW)}`;
+        if (!isDischarging)
+            detail += ` · Base ${fmt(PLATFORM_BASE_AC_WATTS)}`;
+
         if (battery) {
             if (battery.status === 'Charging')
-                detail += `Batt -${fmt(Math.abs(battery.watts))}`;
+                detail += ` · Batt +${fmt(Math.abs(battery.watts))}`;
+            else if (battery.status === 'Discharging')
+                detail += ` · Batt -${fmt(Math.abs(battery.watts))}`;
             else
-                detail += `Batt ${fmt(Math.abs(battery.watts))}`;
+                detail += ` · Batt ${battery.status}`;
         } else {
-            detail += 'Batt –';
+            detail += ' · Batt –';
         }
 
         let display = total === null ? '–'
@@ -307,6 +365,18 @@ const Power = class SystemMonitor_Power extends ElementBase {
             this._askTccdToCollect();
         }
 
+        const collectFinish = (directGpu) => {
+            callback(this._combine(battery, directPower, directGpu));
+        };
+
+        const queryGpuAndFinish = () => {
+            if (this._tccdGpu !== null) {
+                collectFinish(null);
+            } else {
+                this._sampleDirectGpuPower(collectFinish);
+            }
+        };
+
         let tccdDue = this._tccdOk !== false;
         if (!tccdDue) {
             if (this._tccdRetryIn > 0) {
@@ -318,7 +388,7 @@ const Power = class SystemMonitor_Power extends ElementBase {
         }
 
         if (!tccdDue) {
-            callback(this._combine(battery, directPower));
+            queryGpuAndFinish();
             return;
         }
 
@@ -333,7 +403,7 @@ const Power = class SystemMonitor_Power extends ElementBase {
                 this._tccdRetryIn = TCCD_RETRY_POLLS;
                 sm_log('power: tccd not available, relying on local sensors', 'warn');
             }
-            callback(this._combine(battery, directPower));
+            queryGpuAndFinish();
         });
     }
 }
