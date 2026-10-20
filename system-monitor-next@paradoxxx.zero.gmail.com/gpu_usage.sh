@@ -41,12 +41,34 @@ if checkcommand nvidia-smi && [ -d /sys/bus/pci/drivers/nvidia ]; then
 		fi
 	done
 
-	# If no applications are currently using the NVIDIA GPU, avoid nvidia-smi to allow it to enter D3cold
-	if checkcommand fuser && ! fuser /dev/nvidia0 /dev/nvidiactl /dev/dri/renderD129 >/dev/null 2>&1; then
-		echo "0"
-		echo "0"
-		echo "0"
-		exit 0
+	# If no applications are currently using the NVIDIA GPU, avoid nvidia-smi to allow it to enter D3cold.
+	# Filter out passive desktop daemons (like xdg-desktop-portal or browser decoder workers) that hold idle FDs.
+	if checkcommand fuser; then
+		active_pids=$(fuser /dev/nvidia0 /dev/nvidiactl /dev/dri/renderD129 2>/dev/null)
+		if [ -z "$active_pids" ]; then
+			echo "0"
+			echo "0"
+			echo "0"
+			exit 0
+		fi
+		has_active_client=false
+		for pid in $active_pids; do
+			comm=$(cat "/proc/$pid/comm" 2>/dev/null)
+			case "$comm" in
+				xdg-desktop-por*|RDD\ Process|gnome-shell*|"")
+					;;
+				*)
+					has_active_client=true
+					break
+					;;
+			esac
+		done
+		if [ "$has_active_client" = false ]; then
+			echo "0"
+			echo "0"
+			echo "0"
+			exit 0
+		fi
 	fi
 
 	nvidia-smi -i "$GPU_INDEX" --query-gpu=memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits 2>/dev/null | while IFS=', ' read -r a b c; do echo "$a"; echo "$b"; echo "$c"; done

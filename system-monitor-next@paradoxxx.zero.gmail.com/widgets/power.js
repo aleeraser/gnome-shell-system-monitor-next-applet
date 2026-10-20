@@ -274,7 +274,7 @@ const Power = class SystemMonitor_Power extends ElementBase {
                 }
             }
             enumerator.close(null);
-        } catch {}
+        } catch { /* nvidia driver dir not found or unreadable */ }
         return false;
     }
 
@@ -293,7 +293,7 @@ const Power = class SystemMonitor_Power extends ElementBase {
                         callback(isNaN(val) ? null : val);
                         return;
                     }
-                } catch {}
+                } catch { /* parse or process read error */ }
                 callback(null);
             });
         } catch {
@@ -307,18 +307,41 @@ const Power = class SystemMonitor_Power extends ElementBase {
             return;
         }
 
-        // If no processes are holding NVIDIA device nodes, skip nvidia-smi
+        let battery = this._readBattery();
+        let isDischarging = battery && battery.status === 'Discharging';
+
+        // If no non-passive processes are holding NVIDIA device nodes, skip nvidia-smi
         // so the 10-second kernel runtime autosuspend timer can cleanly expire into D3cold.
+        // Filter out passive desktop daemons (xdg-desktop-portal, idle browser workers) that hold idle FDs.
         try {
             let fuserProc = new Gio.Subprocess({
                 argv: ['fuser', '/dev/nvidia0', '/dev/nvidiactl', '/dev/dri/renderD129'],
-                flags: Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE,
+                flags: Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE,
             });
             fuserProc.init(null);
-            fuserProc.wait_async(null, (p, result) => {
+            fuserProc.communicate_utf8_async(null, null, (p, result) => {
                 try {
-                    p.wait_finish(result);
-                    if (p.get_exit_status() !== 0) {
+                    let [ok, output] = p.communicate_utf8_finish(result);
+                    if (!ok || !output || p.get_exit_status() !== 0) {
+                        callback(0.0);
+                        return;
+                    }
+
+                    let pids = output.trim().split(/\s+/);
+                    let hasActiveApp = false;
+                    for (let pid of pids) {
+                        if (!pid)
+                            continue;
+                        let comm = readSysfsString(`/proc/${pid}/comm`);
+                        if (!comm)
+                            continue;
+                        if (comm.startsWith('xdg-desktop-por') || comm === 'RDD Process' || comm.startsWith('gnome-shell'))
+                            continue;
+                        hasActiveApp = true;
+                        break;
+                    }
+
+                    if (!hasActiveApp) {
                         callback(0.0);
                         return;
                     }
@@ -329,7 +352,10 @@ const Power = class SystemMonitor_Power extends ElementBase {
                 this._queryNvidiaSmiPower(callback);
             });
         } catch {
-            this._queryNvidiaSmiPower(callback);
+            if (isDischarging)
+                callback(0.0);
+            else
+                this._queryNvidiaSmiPower(callback);
         }
     }
 
